@@ -42,7 +42,11 @@ versionit() {
   local reply=''
   while true; do
     print -n "Continue? [y/N] "
-    read -k 1 -u 0 reply
+    if [[ -t 0 ]]; then
+      read -k 1 reply
+    else
+      read -k 1 -u 0 reply
+    fi
     print
     case $reply in
       [Yy]) break ;;
