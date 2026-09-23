@@ -11,7 +11,9 @@ zsh-version-it is a single ~80-line zsh plugin (`zsh-version-it.plugin.zsh`) tha
 - `versionit`'s command chain (`npm version` → re-read the version → `git checkout -b` → `npm install --package-lock-only` → `git add .`). The tool's entire premise is "preview, confirm, stage — never commit, never push." Any reordering, added step, or dropped `|| return 1` on one of these calls breaks that contract silently.
 - Quoting/escaping of `$1` (the user's version argument) and `${ZSH_VERSION_IT_BRANCH_PREFIX}/${new}` (the branch name). Nothing in this file runs through shellcheck in CI — `codeql.yml`'s own header comment says it scans GitHub Actions workflows only, since no CodeQL analyzer covers zsh — so shell-quoting bugs here aren't caught by any automation.
 - The `[[ -t 0 ]]` branch in the confirmation prompt that picks between `read -k 1` and `read -k 1 -u 0`. This already broke once and was fixed in PR #6 (piped stdin crashed the prompt) — any change to the prompt loop deserves a check against both an interactive tty and piped/non-interactive stdin.
-- `.github/workflows/*` changes that interpolate untrusted input (PR title, branch name, issue body) directly into a `run:` step — the workflow-injection risk `codeql.yml`'s comment names as the actual threat model for this repo, since it can't scan the shell code itself.
+- Unchanged `call-reusable-*.yml` template content can be checked against
+  the central source. Review local workflow changes, including caller
+  triggers, permissions, runner choices, and pinned revisions.
 
 ## Do not spend attention here
 - README.md, LICENSE — prose only, nothing to review.
