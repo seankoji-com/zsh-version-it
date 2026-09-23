@@ -125,4 +125,35 @@ Describe 'zsh-version-it.plugin.zsh'
       The output should not include 'Staged version'
     End
   End
+  Describe 'failure boundaries after the version bump'
+    Parameters
+      checkout 'npm version'
+      install 'npm version|git checkout|npm install'
+      add 'npm version|git checkout|npm install|git add'
+    End
+    It "stops after $1 fails and never reports success"
+      Data 'y'
+      run_it() {
+        make_package
+        FAIL_STEP="$1"
+        npm() {
+          print -r -- "npm $1" >> "$TMPROOT/calls"
+          [[ "$1" == "$FAIL_STEP" ]] && return 1
+          [[ "$1" == version ]] && make_package 1.2.4
+          return 0
+        }
+        git() {
+          [[ "$1" == checkout && "$FAIL_STEP" == checkout ]] && return 1
+          print -r -- "git $1" >> "$TMPROOT/calls"
+          [[ "$1" != "$FAIL_STEP" ]]
+        }
+        versionit patch
+      }
+      When call run_it "$1"
+      The status should be failure
+      The output should not include 'Staged version'
+      The contents of file "$TMPROOT/calls" should equal "$(printf '%s' "$2" | tr '|' '\n')"
+    End
+  End
+
 End
