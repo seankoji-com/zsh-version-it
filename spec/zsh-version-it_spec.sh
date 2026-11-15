@@ -210,6 +210,25 @@ Describe 'zsh-version-it.plugin.zsh'
     The contents of file "$TMPROOT/yarn.lock" should equal 'ancestor data'
   End
 
+  It 'preserves backslashes in an ignored ancestor lockfile warning'
+    Data 'y'
+    run_it() {
+      mkdir -p 'dir\t/package'
+      print '{"name":"a","version":"1.2.3"}' > 'dir\t/package/package.json'
+      print '/dir*/yarn.lock' > .gitignore
+      print 'ancestor data' > 'dir\t/yarn.lock'
+      git add 'dir\t/package/package.json' && git commit -qm package
+      builtin cd 'dir\t/package'
+      versionit patch
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.4'
+    The stderr should include "versionit: ignored $TMPROOT/dir\\t/yarn.lock will not be updated or staged; update it manually if needed"
+    The contents of file "$TMPROOT/dir\t/yarn.lock" should equal 'ancestor data'
+    The contents of file "$TMPROOT/dir\t/package/package.json" should include '1.2.4'
+  End
+
   It 'still refuses an ancestor lockfile tracked despite an ignore pattern'
     run_it() {
       mkdir -p packages/a

@@ -59,7 +59,7 @@ versionit() {
         print -u2 'versionit: an ancestor lockfile may cover this package; update it manually'
         return 1
       fi
-      print -u2 "versionit: ignored $target_file will not be updated or staged; update it manually if needed"
+      print -r -u2 "versionit: ignored $target_file will not be updated or staged; update it manually if needed"
     done
     [[ $ancestor == $root ]] && break
     ancestor=${ancestor:h}
