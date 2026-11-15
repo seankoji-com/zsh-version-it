@@ -8,6 +8,8 @@ Describe 'zsh-version-it.plugin.zsh'
     git init -q
     git config user.name 'Test'
     git config user.email 'test@example.invalid'
+    git config commit.gpgsign false
+    git config core.hooksPath /dev/null
     print '{"name":"versionit-test","version":"1.2.3"}' > package.json
     git add package.json
     git commit -qm initial
@@ -37,11 +39,20 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'specify an npm version keyword'
   End
 
+  It 'rejects multiple arguments'
+    When call versionit patch extra
+    The status should be failure
+    The stderr should include 'specify an npm version keyword'
+  End
+
   It 'does not mutate anything on refusal'
     Data 'n'
-    When call versionit patch
+    run_it() { versionit patch && return 2; git branch --list 'patch/*'; return 1; }
+    When call run_it
     The status should be failure
     The output should include 'Aborting'
+    The output should include 'Nothing is committed or pushed'
+    The output should not include 'patch/1.2.4'
     The contents of file package.json should include '1.2.3'
   End
 
@@ -67,6 +78,7 @@ Describe 'zsh-version-it.plugin.zsh'
     The output should include 'STAGED=package.json,unrelated,'
     The output should include 'UNSTAGED=unrelated'
     The stderr should include 'Switched to a new branch'
+    The stderr should include 'existing staged changes will remain staged'
     The contents of file package.json should include '1.2.4'
   End
 
@@ -91,12 +103,56 @@ Describe 'zsh-version-it.plugin.zsh'
 
   It 'rejects invalid versions without creating a branch or changing the package'
     Data 'y'
-    run_it() { versionit invalid-version; }
+    run_it() { versionit invalid-version && return 2; git branch --list 'patch/*'; return 1; }
     When call run_it
     The status should be failure
     The output should not include 'Staged version'
+    The output should not include 'patch/1.2.4'
     The stderr should include 'could not calculate the new version'
     The contents of file package.json should include '1.2.3'
+  End
+
+  It 'uses the latest git tag for from-git'
+    Data 'y'
+    run_it() { git tag v1.5.0; versionit from-git; }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.5.0'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'uses the project prerelease identifier'
+    Data 'y'
+    run_it() { print 'preid=rc' > .npmrc; versionit prerelease; }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.4-rc.0'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'refuses a package below an ancestor lockfile before changing it'
+    run_it() {
+      mkdir -p packages/a
+      print '{"name":"a","version":"1.2.3"}' > packages/a/package.json
+      touch package-lock.json
+      git add package-lock.json packages/a/package.json && git commit -qm workspace
+      builtin cd packages/a
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'ancestor lockfile'
+    The contents of file "$TMPROOT/packages/a/package.json" should include '1.2.3'
+  End
+
+  It 'reports a staging failure after creating the branch'
+    Data 'y'
+    run_it() { git() { [[ $1 == add ]] && return 1; command git "$@"; }; versionit patch; }
+    When call run_it
+    The status should be failure
+    The output should not include 'Staged version'
+    The stderr should include 'staging failed'
+    The stderr should include 'Switched to a new branch'
   End
 
   It 'stops and reports a lockfile update failure without staging the package'
@@ -124,6 +180,39 @@ Describe 'zsh-version-it.plugin.zsh'
     The status should be failure
     The stderr should include 'must be tracked and have no staged or unstaged changes'
     The contents of file package.json should include '1.2.3'
+  End
+
+  It 'refuses a staged package edit without changing the index'
+    run_it() { print ' ' >> package.json; git add package.json; versionit patch; }
+    When call run_it
+    The status should be failure
+    The stderr should include 'must be tracked and have no staged or unstaged changes'
+    The contents of file package.json should include '1.2.3'
+  End
+
+  It 'refuses an untracked lockfile without changing it'
+    run_it() { print 'user data' > package-lock.json; versionit patch; }
+    When call run_it
+    The status should be failure
+    The stderr should include 'must be tracked and have no staged or unstaged changes'
+    The contents of file package-lock.json should equal 'user data'
+  End
+
+  It 'updates npm shrinkwrap when it exists'
+    Data 'y'
+    run_it() {
+      npm install --package-lock-only --ignore-scripts >/dev/null || return
+      mv package-lock.json npm-shrinkwrap.json || return
+      git add npm-shrinkwrap.json && git commit -qm shrinkwrap
+      versionit patch || return
+      node -e 'console.log("SHRINKWRAP="+require("./npm-shrinkwrap.json").version); if(require("./npm-shrinkwrap.json").version!=="1.2.4") process.exit(1)' || return
+      [[ ! -e package-lock.json ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.4'
+    The output should include 'SHRINKWRAP=1.2.4'
+    The stderr should include 'Switched to a new branch'
   End
 
   It 'updates an existing npm lockfile without staging unrelated files'
