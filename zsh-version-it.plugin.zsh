@@ -31,20 +31,36 @@ versionit() {
   local current
   current=$(version) || return 1
 
-  local lock='' manager='' target_file root ancestor
-  local -a locks paths
+  local lock='' manager='' target_file root ancestor candidate ignored_npm_lock=''
+  local -a locks paths lock_names
+  lock_names=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock)
   locks=()
-  [[ -f package-lock.json ]] && locks+=(package-lock.json)
-  [[ -f npm-shrinkwrap.json ]] && locks+=(npm-shrinkwrap.json)
-  [[ -f pnpm-lock.yaml ]] && locks+=(pnpm-lock.yaml)
-  [[ -f yarn.lock ]] && locks+=(yarn.lock)
   root=$(git rev-parse --show-toplevel 2>/dev/null) || { print -u2 'versionit: not in a git repository'; return 1 }
+  # A Yarn workspace can require a lock update even when its lock is ignored.
+  if [[ -f yarn.lock ]] && node -e 'const p = require(process.cwd() + "/package.json"); process.exit(p.workspaces ? 0 : 1)'; then
+    print -u2 'versionit: Yarn workspaces require a manual version and lockfile update'
+    return 1
+  fi
+  for candidate in "${lock_names[@]}"; do
+    [[ -f $candidate ]] || continue
+    if ! git ls-files --error-unmatch -- "$candidate" >/dev/null 2>&1 && git check-ignore -q -- "$candidate"; then
+      print -u2 "versionit: ignored $candidate will not be updated or staged; update it manually if needed"
+      [[ $candidate == package-lock.json || $candidate == npm-shrinkwrap.json ]] && ignored_npm_lock=$candidate
+    else
+      locks+=("$candidate")
+    fi
+  done
   ancestor=${PWD:A:h}
   while [[ ${PWD:A} != $root && ( $ancestor == $root || $ancestor == $root/* ) ]]; do
-    if [[ -f $ancestor/package-lock.json || -f $ancestor/npm-shrinkwrap.json || -f $ancestor/pnpm-lock.yaml || -f $ancestor/yarn.lock ]]; then
-      print -u2 'versionit: an ancestor lockfile may cover this package; update it manually'
-      return 1
-    fi
+    for candidate in "${lock_names[@]}"; do
+      target_file=$ancestor/$candidate
+      [[ -f $target_file ]] || continue
+      if git ls-files --error-unmatch -- "$target_file" >/dev/null 2>&1 || ! git check-ignore -q -- "$target_file"; then
+        print -u2 'versionit: an ancestor lockfile may cover this package; update it manually'
+        return 1
+      fi
+      print -u2 "versionit: ignored $target_file will not be updated or staged; update it manually if needed"
+    done
     [[ $ancestor == $root ]] && break
     ancestor=${ancestor:h}
   done
@@ -58,16 +74,11 @@ versionit() {
     pnpm-lock.yaml) manager=pnpm ;;
     yarn.lock) manager=yarn ;;
   esac
-  if [[ $manager == yarn ]] && node -e 'const p = require(process.cwd() + "/package.json"); process.exit(p.workspaces ? 0 : 1)'; then
-    print -u2 'versionit: Yarn workspaces require a manual version and lockfile update'
+  if [[ $manager == npm && -n $ignored_npm_lock ]]; then
+    print -u2 "versionit: npm may modify ignored $ignored_npm_lock; update the version and lockfiles manually"
     return 1
   fi
   paths=(package.json)
-  if [[ -n $lock ]] && ! git ls-files --error-unmatch -- "$lock" >/dev/null 2>&1 && git check-ignore -q -- "$lock"; then
-    print -u2 "versionit: ignored $lock will not be updated or staged; update it manually if needed"
-    lock=''
-    manager=''
-  fi
   [[ -n $lock ]] && paths+=("$lock")
   for target_file in "${paths[@]}"; do
     if ! git ls-files --error-unmatch -- "$target_file" >/dev/null 2>&1 ||
