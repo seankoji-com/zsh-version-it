@@ -52,6 +52,9 @@ Describe 'zsh-version-it.plugin.zsh'
     The status should be failure
     The output should include 'Aborting'
     The output should include 'Nothing is committed or pushed'
+    The output should include 'git checkout -b'
+    The output should include 'npm version --no-git-tag-version'
+    The output should include 'git add -- package.json'
     The output should not include 'patch/1.2.4'
     The contents of file package.json should include '1.2.3'
   End
@@ -130,6 +133,46 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'Switched to a new branch'
   End
 
+  It 'honours allow-same-version in project configuration'
+    Data 'y'
+    run_it() { print 'allow-same-version=true' > .npmrc; versionit 1.2.3; }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.3'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'reports a version failure after checkout'
+    Data 'y'
+    run_it() {
+      npm() {
+        if [[ $1 == version && "$PWD" == "$TMPROOT" ]]; then return 1; fi
+        command npm "$@"
+      }
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'version update failed'
+    The output should not include 'Staged version'
+  End
+
+  It 'refuses a package changed after confirmation'
+    Data 'y'
+    run_it() {
+      npm() {
+        if [[ $1 == config && $3 == preid ]]; then print ' ' >> "$TMPROOT/package.json"; fi
+        command npm "$@"
+      }
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'changed after confirmation; no branch was created'
+    The output should include 'Continue?'
+    The contents of file package.json should include '1.2.3'
+  End
+
   It 'refuses a package below an ancestor lockfile before changing it'
     run_it() {
       mkdir -p packages/a
@@ -198,6 +241,22 @@ Describe 'zsh-version-it.plugin.zsh'
     The contents of file package-lock.json should equal 'user data'
   End
 
+  It 'leaves an ignored lockfile untouched and warns'
+    Data 'y'
+    run_it() {
+      print 'package-lock.json' > .gitignore
+      print 'local data' > package-lock.json
+      versionit patch || return
+      [[ $(cat package-lock.json) == 'local data' ]] || return 1
+      git diff --cached --name-only
+    }
+    When call run_it
+    The status should be success
+    The stderr should include 'ignored package-lock.json will not be updated or staged'
+    The output should include 'package.json'
+    The contents of file package-lock.json should equal 'local data'
+  End
+
   It 'updates npm shrinkwrap when it exists'
     Data 'y'
     run_it() {
@@ -212,6 +271,20 @@ Describe 'zsh-version-it.plugin.zsh'
     The status should be success
     The output should include 'Staged version 1.2.4'
     The output should include 'SHRINKWRAP=1.2.4'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'preserves shrinkwrap indentation and line endings'
+    Data 'y'
+    run_it() {
+      printf '{\r\n    "name": "versionit-test",\r\n    "version": "1.2.3",\r\n    "lockfileVersion": 3,\r\n    "packages": {\r\n        "": {\r\n            "version": "1.2.3"\r\n        }\r\n    }\r\n}\r\n' > npm-shrinkwrap.json
+      git add npm-shrinkwrap.json && git commit -qm shrinkwrap
+      versionit patch || return
+      node -e 'const s=require("fs").readFileSync("npm-shrinkwrap.json","utf8"); if(!s.includes("\r\n    \"version\": \"1.2.4\"") || /(?<!\r)\n/.test(s)) process.exit(1)'
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.4'
     The stderr should include 'Switched to a new branch'
   End
 
@@ -244,6 +317,27 @@ Describe 'zsh-version-it.plugin.zsh'
     The status should be success
     The output should include 'Staged version 1.2.4'
     The stderr should include 'Switched to a new branch'
+  End
+
+  It 'dispatches the pnpm lockfile refresh without relying on an installed pnpm'
+    Data 'y'
+    run_it() {
+      mkdir bin
+      print '#!/bin/sh' > bin/pnpm
+      print 'printf "%s\n" "$*" > "$PNPM_CALLS"' >> bin/pnpm
+      chmod +x bin/pnpm
+      export PNPM_CALLS="$TMPROOT/pnpm-calls"
+      PATH="$TMPROOT/bin:$PATH"
+      print 'lockfileVersion: 9' > pnpm-lock.yaml
+      git add pnpm-lock.yaml && git commit -qm lock
+      versionit patch || return
+      [[ ! -e package-lock.json ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.4'
+    The stderr should include 'Switched to a new branch'
+    The contents of file "$TMPROOT/pnpm-calls" should equal 'install --lockfile-only --ignore-scripts'
   End
 
   It 'uses yarn for an existing yarn lockfile without creating an npm lockfile'

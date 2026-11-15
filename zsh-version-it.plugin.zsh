@@ -63,6 +63,11 @@ versionit() {
     return 1
   fi
   paths=(package.json)
+  if [[ -n $lock ]] && ! git ls-files --error-unmatch -- "$lock" >/dev/null 2>&1 && git check-ignore -q -- "$lock"; then
+    print -u2 "versionit: ignored $lock will not be updated or staged; update it manually if needed"
+    lock=''
+    manager=''
+  fi
   [[ -n $lock ]] && paths+=("$lock")
   for target_file in "${paths[@]}"; do
     if ! git ls-files --error-unmatch -- "$target_file" >/dev/null 2>&1 ||
@@ -114,12 +119,13 @@ versionit() {
   done
 
   # Ask npm to resolve keywords in an isolated copy before touching the tree.
-  local new tmp result gitdir preid
+  local new tmp result gitdir preid allow_same
   tmp=$(mktemp -d) || return 1
   gitdir=$(git rev-parse --absolute-git-dir) || { rm -rf -- "$tmp"; return 1; }
   preid=$(npm config get preid) || { rm -rf -- "$tmp"; return 1; }
+  allow_same=$(npm config get allow-same-version) || { rm -rf -- "$tmp"; return 1; }
   if ! cp -- package.json "$tmp/package.json" ||
-     ! (builtin cd "$tmp" && GIT_DIR="$gitdir" GIT_WORK_TREE="$tmp" npm version --no-git-tag-version --ignore-scripts --package-lock=false --preid="$preid" "$1" >/dev/null); then
+     ! (builtin cd "$tmp" && GIT_DIR="$gitdir" GIT_WORK_TREE="$tmp" npm version --no-git-tag-version --ignore-scripts --package-lock=false --preid="$preid" --allow-same-version="$allow_same" "$1" >/dev/null); then
     rm -rf -- "$tmp"
     print -u2 'versionit: could not calculate the new version'
     return 1
@@ -128,6 +134,13 @@ versionit() {
   result=$?
   rm -rf -- "$tmp"
   (( result == 0 )) || return 1
+  for target_file in "${paths[@]}"; do
+    if ! git ls-files --error-unmatch -- "$target_file" >/dev/null 2>&1 ||
+       ! git diff --quiet -- "$target_file" || ! git diff --cached --quiet -- "$target_file"; then
+      print -u2 "versionit: $target_file changed after confirmation; no branch was created"
+      return 1
+    fi
+  done
   git checkout -b "${ZSH_VERSION_IT_BRANCH_PREFIX}/${new}" || return 1
   local update_npm_lock=false
   [[ $manager == npm ]] && update_npm_lock=true
@@ -143,7 +156,7 @@ versionit() {
     yarn) ;;
   esac
   if [[ $lock == npm-shrinkwrap.json ]]; then
-    node -e 'const fs = require("fs"); const p = process.argv[1]; const lock = JSON.parse(fs.readFileSync(p, "utf8")); lock.version = process.argv[2]; if (lock.packages && lock.packages[""]) lock.packages[""].version = process.argv[2]; fs.writeFileSync(p, JSON.stringify(lock, null, 2) + "\n");' "$lock" "$new" || { print -u2 'versionit: shrinkwrap update failed; inspect the working tree'; return 1; }
+    node -e 'const fs = require("fs"); const p = process.argv[1]; const text = fs.readFileSync(p, "utf8"); const lock = JSON.parse(text); const indent = (text.match(/\n([ \t]+)\S/) || [])[1] || ""; const eol = text.includes("\r\n") ? "\r\n" : "\n"; const trailing = /\r?\n$/.test(text) ? eol : ""; lock.version = process.argv[2]; if (lock.packages && lock.packages[""]) lock.packages[""].version = process.argv[2]; fs.writeFileSync(p, JSON.stringify(lock, null, indent).replace(/\n/g, eol) + trailing);' "$lock" "$new" || { print -u2 'versionit: shrinkwrap update failed; inspect the working tree'; return 1; }
   fi
   git add -- "${paths[@]}" || { print -u2 'versionit: staging failed; inspect the branch and working tree'; return 1; }
 
