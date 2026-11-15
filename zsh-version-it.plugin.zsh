@@ -16,7 +16,144 @@ version() {
   node -p "require('./package.json').version"
 }
 
+# Records are per worktree. They contain hashes and metadata, never file contents.
+_versionit_record() {
+  node -e '
+    const fs = require("fs"), crypto = require("crypto");
+    const [file, branch, head, version, lock, manager, dir] = process.argv.slice(1);
+    const hash = p => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+    fs.writeFileSync(file, JSON.stringify({format: 1, branch, head, version, lock, manager, dir,
+      packageHash: hash("package.json"), lockHash: hash(lock)}), {flag: "wx", mode: 0o600});
+  ' "$1" "$2" "$3" "$4" "$5" "$6" "${PWD:A}"
+}
+
+_versionit_failed_refresh() {
+  local record=$1 branch=$2 head=$3 new=$4 lock=$5 manager=$6 package_hash=$7
+  if [[ $(git branch --show-current) == $branch && $(git rev-parse HEAD) == $head ]] &&
+     git diff --cached --quiet -- package.json "$lock" &&
+     node -e 'const f=require("fs"),c=require("crypto");try {if(c.createHash("sha256").update(f.readFileSync("package.json")).digest("hex")!==process.argv[1])process.exit(1);f.accessSync(process.argv[2])}catch(e){process.exit(1)}' "$package_hash" "$lock" &&
+     _versionit_resume_scope "$lock" &&
+     _versionit_record "$record" "$branch" "$head" "$new" "$lock" "$manager"; then
+    print -u2 'versionit: lockfile update failed; inspect the working tree and run versionit resume'
+  else
+    print -u2 'versionit: lockfile update failed; no safe recovery record, inspect and recover manually'
+  fi
+}
+
+# Validate before confirmation and again after confirmation, before consuming the record.
+_versionit_validate_record() {
+  [[ -f package.json && ! -L package.json ]] || return 1
+  node -e '
+    const fs = require("fs"), crypto = require("crypto"), cp = require("child_process");
+    try {
+      const r = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+      if (fs.lstatSync(r.lock).isSymbolicLink() || !fs.statSync(r.lock).isFile()) process.exit(1);
+      const hash = p => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+      const git = (...args) => cp.execFileSync("git", args, {encoding:"utf8"}).trim();
+      if (r.format !== 1 || r.dir !== process.cwd() ||
+          !["package-lock.json", "pnpm-lock.yaml"].includes(r.lock) ||
+          r.manager !== (r.lock === "package-lock.json" ? "npm" : "pnpm") ||
+          typeof r.branch !== "string" || typeof r.head !== "string" || typeof r.version !== "string" ||
+          git("branch", "--show-current") !== r.branch || git("rev-parse", "HEAD") !== r.head ||
+          JSON.parse(fs.readFileSync("package.json")).version !== r.version ||
+          hash("package.json") !== r.packageHash || hash(r.lock) !== r.lockHash) process.exit(1);
+      cp.execFileSync("git", ["ls-files", "--error-unmatch", "--", "package.json", r.lock], {stdio:"ignore"});
+      cp.execFileSync("git", ["diff", "--cached", "--quiet", "--", "package.json", r.lock], {stdio:"ignore"});
+    } catch (_) { process.exit(1); }
+  ' "$1"
+}
+
+_versionit_resume_scope() {
+  local lock=$1 root ancestor candidate
+  if ! node -e 'const p=require(process.cwd()+"/package.json"); process.exit(p.workspaces ? 1 : 0)' || [[ -e pnpm-workspace.yaml ]]; then
+    print -u2 'versionit: workspace recovery requires manual review'; return 1
+  fi
+  root=$(git rev-parse --show-toplevel) || return 1
+  ancestor=${PWD:A:h}
+  while [[ ${PWD:A} != $root && ( $ancestor == $root || $ancestor == $root/* ) ]]; do
+    for candidate in package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock pnpm-workspace.yaml package.json; do
+      if [[ $candidate == package.json && -f $ancestor/$candidate ]]; then
+        node -e 'const p=require(process.argv[1]); process.exit(p.workspaces ? 1 : 0)' "$ancestor/$candidate" || { print -u2 'versionit: ancestor workspace requires manual recovery'; return 1; }
+      elif [[ $candidate != package.json && -e $ancestor/$candidate ]]; then
+        print -u2 'versionit: ancestor workspace or lockfile requires manual recovery'; return 1
+      fi
+    done
+    [[ $ancestor == $root ]] && break
+    ancestor=${ancestor:h}
+  done
+  for candidate in package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock; do
+    [[ $candidate == $lock || ! -e $candidate ]] || { print -u2 'versionit: another lockfile requires manual recovery'; return 1; }
+  done
+}
+
+_versionit_resume() {
+  local gitdir claim result
+  gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  claim=$gitdir/versionit-resume.lock
+  mkdir -- "$claim" 2>/dev/null || { print -u2 "versionit: resume already running or interrupted; inspect $claim"; return 1; }
+  {
+    _versionit_resume_locked
+    result=$?
+  } always {
+    rmdir -- "$claim" || print -u2 "versionit: could not remove $claim; inspect it manually"
+  }
+  return $result
+}
+
+_versionit_resume_locked() {
+  local gitdir record branch head new lock manager reply package_hash result
+  gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  record=$gitdir/versionit-resume.json
+  if [[ ! -f $record || -L $record ]] || ! _versionit_validate_record "$record"; then
+    print -u2 'versionit: recovery state missing or changed; inspect and recover manually'
+    return 1
+  fi
+  branch=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).branch' "$record") || return 1
+  head=$(git rev-parse HEAD) || return 1
+  new=$(version) || return 1
+  lock=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).lock' "$record") || return 1
+  manager=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).manager' "$record") || return 1
+  package_hash=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).packageHash' "$record") || return 1
+  _versionit_resume_scope "$lock" || return 1
+  (( $+commands[$manager] )) || { print -u2 "versionit: $manager is required"; return 1; }
+  print "Resume version $new on branch $branch: refresh $lock with $manager (lifecycle scripts disabled), then stage package.json and $lock."
+  [[ $manager != pnpm ]] || print 'pnpm may still run .pnpmfile.cjs hooks.'
+  print 'Review the current package and lockfile diff before confirming.'
+  print 'Existing unrelated changes remain untouched. Nothing is committed or pushed.'
+  print -n 'Continue? [y/N] '
+  if [[ -t 0 ]]; then
+    read -k 1 reply || return 1
+  else
+    read -k 1 -u 0 reply || return 1
+  fi
+  print
+  [[ $reply == [Yy] ]] || { print 'Aborting'; return 1; }
+  _versionit_validate_record "$record" || { print -u2 'versionit: recovery state changed after confirmation'; return 1; }
+  _versionit_resume_scope "$lock" || return 1
+  # Consume before mutation. A crash or staging failure requires manual recovery.
+  rm -- "$record" || return 1
+  if [[ $manager == npm ]]; then
+    npm install --package-lock-only --ignore-scripts
+  else
+    pnpm install --lockfile-only --ignore-scripts
+  fi
+  result=$?
+  if [[ $(git branch --show-current) != $branch || $(git rev-parse HEAD) != $head ]] ||
+     ! git diff --cached --quiet -- package.json "$lock" ||
+     ! node -e 'const f=require("fs"),c=require("crypto");try {if(c.createHash("sha256").update(f.readFileSync("package.json")).digest("hex")!==process.argv[1])process.exit(1);f.accessSync(process.argv[2])}catch(e){process.exit(1)}' "$package_hash" "$lock"; then
+    print -u2 'versionit: state changed during refresh; inspect and recover manually'; return 1
+  fi
+  if (( result != 0 )); then
+    _versionit_record "$record" "$branch" "$head" "$new" "$lock" "$manager" || print -u2 'versionit: could not save recovery record; recover manually'
+    print -u2 'versionit: lockfile update failed; inspect the working tree and run versionit resume'
+    return 1
+  fi
+  git add -- package.json "$lock" || { print -u2 'versionit: staging failed; inspect the index and recover manually'; return 1; }
+  print "Staged version $new on branch $branch"
+}
+
 versionit() {
+  if (( $# == 1 )) && [[ $1 == resume ]]; then _versionit_resume; return $?; fi
   if [[ ! -f package.json ]]; then
     print -u2 "versionit: no package.json in $PWD"
     return 1
@@ -36,6 +173,13 @@ versionit() {
   lock_names=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock)
   locks=()
   root=$(git rev-parse --show-toplevel 2>/dev/null) || { print -u2 'versionit: not in a git repository'; return 1 }
+  local gitdir record
+  gitdir=$(git rev-parse --absolute-git-dir) || return 1
+  record=$gitdir/versionit-resume.json
+  if [[ -e $record || -L $record || -e $gitdir/versionit-resume.lock ]]; then
+    print -u2 "versionit: recovery state exists at $record or $gitdir/versionit-resume.lock; inspect it before continuing"
+    return 1
+  fi
   # A Yarn workspace can require a lock update even when its lock is ignored.
   if [[ -f yarn.lock ]] && node -e 'const p = require(process.cwd() + "/package.json"); process.exit(p.workspaces ? 0 : 1)'; then
     print -u2 'versionit: Yarn workspaces require a manual version and lockfile update'
@@ -130,7 +274,7 @@ versionit() {
   done
 
   # Ask npm to resolve keywords in an isolated copy before touching the tree.
-  local new tmp result gitdir preid allow_same
+  local new tmp result preid allow_same
   tmp=$(mktemp -d) || return 1
   gitdir=$(git rev-parse --absolute-git-dir) || { rm -rf -- "$tmp"; return 1; }
   preid=$(npm config get preid) || { rm -rf -- "$tmp"; return 1; }
@@ -152,18 +296,24 @@ versionit() {
       return 1
     fi
   done
+  local branch head
+  [[ ! -e $record && ! -L $record && ! -e $gitdir/versionit-resume.lock ]] || { print -u2 "versionit: recovery state exists at $record or $gitdir/versionit-resume.lock; inspect it before continuing"; return 1; }
   git checkout -b "${ZSH_VERSION_IT_BRANCH_PREFIX}/${new}" || return 1
+  branch=$(git branch --show-current) || return 1
+  head=$(git rev-parse HEAD) || return 1
   local update_npm_lock=false
   [[ $manager == npm ]] && update_npm_lock=true
   if ! npm version --no-git-tag-version --ignore-scripts --package-lock="$update_npm_lock" "$new"; then
     print -u2 'versionit: version update failed; inspect the branch and working tree'
     return 1
   fi
+  local package_hash
+  package_hash=$(node -e 'const f=require("fs"),c=require("crypto");process.stdout.write(c.createHash("sha256").update(f.readFileSync("package.json")).digest("hex"))') || return 1
   case $manager in
     npm) if [[ $lock != npm-shrinkwrap.json ]]; then
-      npm install --package-lock-only --ignore-scripts || { print -u2 'versionit: lockfile update failed; inspect the working tree'; return 1; }
+      npm install --package-lock-only --ignore-scripts || { _versionit_failed_refresh "$record" "$branch" "$head" "$new" "$lock" npm "$package_hash"; return 1; }
     fi ;;
-    pnpm) pnpm install --lockfile-only --ignore-scripts || { print -u2 'versionit: lockfile update failed; inspect the working tree'; return 1; } ;;
+    pnpm) pnpm install --lockfile-only --ignore-scripts || { _versionit_failed_refresh "$record" "$branch" "$head" "$new" "$lock" pnpm "$package_hash"; return 1; } ;;
     yarn) ;;
   esac
   if [[ $lock == npm-shrinkwrap.json ]]; then
