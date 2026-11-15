@@ -593,7 +593,10 @@ Describe 'zsh-version-it.plugin.zsh'
       git add npm-shrinkwrap.json && git commit -qm shrinkwrap || return
       unrelated_changes || return
       node() {
-        if [[ $1 == -e && $3 == npm-shrinkwrap.json ]]; then return 73; fi
+        if [[ $1 == -e && $3 == npm-shrinkwrap.json ]]; then
+          cp npm-shrinkwrap.json "$TMPROOT/shrinkwrap-before-failed-write" || return 74
+          return 73
+        fi
         command node "$@"
       }
       versionit patch
@@ -602,7 +605,7 @@ Describe 'zsh-version-it.plugin.zsh'
       unrelated_preserved || return 3
       [[ $(git diff --cached --name-only) == unrelated ]] || return 4
       [[ $(git diff --name-only -- package.json) == package.json ]] || return 5
-      [[ $(git status --porcelain -- npm-shrinkwrap.json) == '' ]] || return 6
+      cmp -s npm-shrinkwrap.json "$TMPROOT/shrinkwrap-before-failed-write" || return 6
       return $result
     }
     When call run_it
