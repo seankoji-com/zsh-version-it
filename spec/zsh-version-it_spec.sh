@@ -17,6 +17,22 @@ Describe 'zsh-version-it.plugin.zsh'
   cleanup() { builtin cd "$SHELLSPEC_PROJECT_ROOT"; rm -rf "$TMPROOT"; }
   missing_pnpm() { ! command -v pnpm >/dev/null 2>&1; }
   missing_yarn() { ! command -v yarn >/dev/null 2>&1; }
+  unrelated_changes() {
+    print 'original' > unrelated
+    git add unrelated && git commit -qm unrelated || return
+    print 'staged' > unrelated
+    git add unrelated || return
+    print 'unstaged' >> unrelated
+    print 'untracked data' > untracked
+    original_branch=$(git branch --show-current)
+    original_index=$(git write-tree)
+    original_diff=$(git diff --binary | git hash-object --stdin)
+  }
+  unrelated_preserved() {
+    [[ $(git write-tree) == $original_index &&
+       $(git diff --binary -- unrelated | git hash-object --stdin) == $original_diff &&
+       $(<untracked) == 'untracked data' ]]
+  }
   BeforeEach 'setup'
   AfterEach 'cleanup'
 
@@ -498,5 +514,101 @@ Describe 'zsh-version-it.plugin.zsh'
     The status should be failure
     The stderr should include 'multiple lockfiles'
     The contents of file package.json should include '1.2.3'
+  End
+
+  It 'refuses a missing required pnpm before changing branch, index or worktree'
+    run_it() {
+      local PATH="$PATH"
+      print 'lockfileVersion: 9' > pnpm-lock.yaml
+      git add pnpm-lock.yaml && git commit -qm lock || return
+      unrelated_changes || return
+      mkdir bin
+      ln -s "$(command -v git)" bin/git
+      ln -s "$(command -v node)" bin/node
+      PATH="$TMPROOT/bin"
+      versionit patch
+      result=$?
+      [[ $result == 1 && $(git branch --show-current) == $original_branch ]] || return 2
+      unrelated_preserved || return 3
+      [[ $(git status --porcelain -- package.json pnpm-lock.yaml) == '' ]] || return 4
+      [[ -z $(git branch --list 'patch/*') ]] || return 5
+      return $result
+    }
+    When call run_it
+    The status should equal 1
+    The stderr should include 'pnpm is required for pnpm-lock.yaml'
+    The output should not include 'Continue?'
+    The contents of file package.json should include '1.2.3'
+    The contents of file pnpm-lock.yaml should equal 'lockfileVersion: 9'
+  End
+
+  It 'refuses a tracked Yarn workspace root without changing any state'
+    run_it() {
+      print '{"name":"versionit-test","version":"1.2.3","workspaces":["packages/*"]}' > package.json
+      print 'tracked yarn lock' > yarn.lock
+      git add package.json yarn.lock && git commit -qm workspace || return
+      unrelated_changes || return
+      versionit patch
+      result=$?
+      [[ $result == 1 && $(git branch --show-current) == $original_branch ]] || return 2
+      unrelated_preserved || return 3
+      [[ $(git status --porcelain -- package.json yarn.lock) == '' ]] || return 4
+      [[ -z $(git branch --list 'patch/*') ]] || return 5
+      return $result
+    }
+    When call run_it
+    The status should equal 1
+    The stderr should include 'Yarn workspaces require a manual version and lockfile update'
+    The output should not include 'Continue?'
+    The contents of file package.json should include '1.2.3'
+    The contents of file yarn.lock should equal 'tracked yarn lock'
+  End
+
+  It 'refuses invocation outside Git while preserving the existing repository'
+    run_it() {
+      unrelated_changes || return
+      mkdir outside
+      print '{"name":"outside","version":"1.2.3"}' > outside/package.json
+      builtin cd outside
+      GIT_CEILING_DIRECTORIES="$TMPROOT" versionit patch
+      result=$?
+      builtin cd "$TMPROOT"
+      [[ $result == 1 && $(git branch --show-current) == $original_branch ]] || return 2
+      unrelated_preserved || return 3
+      [[ $(git status --porcelain -- package.json) == '' ]] || return 4
+      [[ -z $(git branch --list 'patch/*') ]] || return 5
+      return $result
+    }
+    When call run_it
+    The status should equal 1
+    The stderr should include 'not in a git repository'
+    The output should not include 'Continue?'
+    The contents of file "$TMPROOT/outside/package.json" should equal '{"name":"outside","version":"1.2.3"}'
+  End
+
+  It 'reports a shrinkwrap write failure after checkout without staging the bump'
+    Data 'y'
+    run_it() {
+      print '{"name":"versionit-test","version":"1.2.3","lockfileVersion":3,"packages":{"":{"name":"versionit-test","version":"1.2.3"}}}' > npm-shrinkwrap.json
+      git add npm-shrinkwrap.json && git commit -qm shrinkwrap || return
+      unrelated_changes || return
+      node() {
+        if [[ $1 == -e && $3 == npm-shrinkwrap.json ]]; then return 73; fi
+        command node "$@"
+      }
+      versionit patch
+      result=$?
+      [[ $result == 1 && $(git branch --show-current) == patch/1.2.4 ]] || return 2
+      unrelated_preserved || return 3
+      [[ $(git diff --cached --name-only) == unrelated ]] || return 4
+      [[ $(git diff --name-only -- package.json) == package.json ]] || return 5
+      [[ $(git status --porcelain -- npm-shrinkwrap.json) == '' ]] || return 6
+      return $result
+    }
+    When call run_it
+    The status should equal 1
+    The stderr should include 'shrinkwrap update failed; inspect the working tree'
+    The output should not include 'Staged version'
+    The contents of file package.json should include '1.2.4'
   End
 End
