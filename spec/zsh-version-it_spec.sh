@@ -415,12 +415,24 @@ Describe 'zsh-version-it.plugin.zsh'
   End
 
   It 'refuses a concurrent resume before touching a record'
+    Data 'y'
     run_it() {
-      mkdir "$(git rev-parse --absolute-git-dir)/versionit-resume.lock" || return
-      versionit resume
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      local gitdir before
+      gitdir=$(git rev-parse --absolute-git-dir) || return
+      before=$(git hash-object "$gitdir/versionit-resume.json") || return
+      mkdir "$gitdir/versionit-resume.lock" || return
+      versionit resume && return 3
+      [[ -d $gitdir/versionit-resume.lock && $(git hash-object "$gitdir/versionit-resume.json") == $before ]]
     }
     When call run_it
-    The status should be failure
+    The status should be success
+    The output should include 'Continue?'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'Switched to a new branch'
     The stderr should include 'resume already running or interrupted'
   End
 

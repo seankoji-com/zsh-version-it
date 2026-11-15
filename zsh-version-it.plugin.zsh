@@ -91,9 +91,12 @@ _versionit_resume() {
   gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
   claim=$gitdir/versionit-resume.lock
   mkdir -- "$claim" 2>/dev/null || { print -u2 "versionit: resume already running or interrupted; inspect $claim"; return 1; }
-  _versionit_resume_locked
-  result=$?
-  rmdir -- "$claim" || print -u2 "versionit: could not remove $claim; inspect it manually"
+  {
+    _versionit_resume_locked
+    result=$?
+  } always {
+    rmdir -- "$claim" || print -u2 "versionit: could not remove $claim; inspect it manually"
+  }
   return $result
 }
 
@@ -114,6 +117,7 @@ _versionit_resume_locked() {
   _versionit_resume_scope "$lock" || return 1
   (( $+commands[$manager] )) || { print -u2 "versionit: $manager is required"; return 1; }
   print "Resume version $new on branch $branch: refresh $lock with $manager (lifecycle scripts disabled), then stage package.json and $lock."
+  [[ $manager != pnpm ]] || print 'pnpm may still run .pnpmfile.cjs hooks.'
   print 'Review the current package and lockfile diff before confirming.'
   print 'Existing unrelated changes remain untouched. Nothing is committed or pushed.'
   print -n 'Continue? [y/N] '
