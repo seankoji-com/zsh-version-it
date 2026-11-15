@@ -274,6 +274,124 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'Switched to a new branch'
   End
 
+  It 'resumes a failed npm refresh and preserves unrelated staged work'
+    Data 'yy'
+    run_it() {
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      print 'user data' > unrelated && git add unrelated
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      [[ $(git branch --show-current) == patch/1.2.4 ]] || return 3
+      [[ $(git diff --cached --name-only) == unrelated ]] || return 4
+      unfunction npm
+      versionit resume || return 5
+      [[ $(git diff --cached --name-only | tr '\n' ',') == 'package-lock.json,package.json,unrelated,' ]] || return 6
+      node -e 'const p=require("./package-lock.json");if(p.version!=="1.2.4")process.exit(1)' || return 7
+      [[ ! -e $(git rev-parse --absolute-git-dir)/versionit-resume.json ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Resume version 1.2.4'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'retries a failed pnpm refresh and refuses intervening target edits'
+    Data 'yy'
+    run_it() {
+      mkdir bin
+      print '#!/bin/sh' > bin/pnpm
+      print 'exit 1' >> bin/pnpm
+      chmod +x bin/pnpm
+      PATH="$TMPROOT/bin:$PATH"
+      print 'lockfileVersion: 9' > pnpm-lock.yaml
+      git add pnpm-lock.yaml && git commit -qm lock
+      versionit patch && return 2
+      versionit resume && return 3
+      print 'user edit' >> pnpm-lock.yaml
+      versionit resume && return 4
+      [[ $(git diff --cached --name-only) == '' && $(git branch --show-current) == patch/1.2.4 ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Resume version 1.2.4'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'recovery state missing or changed'
+    The stderr should include 'Switched to a new branch'
+    The contents of file pnpm-lock.yaml should include 'user edit'
+  End
+
+  It 'refuses resume after a branch switch or a staged target edit'
+    Data 'y'
+    run_it() {
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      git checkout -qb other || return
+      versionit resume && return 3
+      git checkout -q patch/1.2.4 || return
+      git add package.json
+      versionit resume && return 4
+      git diff --cached --name-only
+    }
+    When call run_it
+    The status should be success
+    The output should include 'package.json'
+    The stderr should include 'recovery state missing or changed'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'resumes pnpm with scripts disabled and stages only the intended files'
+    Data 'yy'
+    run_it() {
+      mkdir bin
+      print '#!/bin/sh' > bin/pnpm
+      print 'exit 1' >> bin/pnpm
+      chmod +x bin/pnpm
+      PATH="$TMPROOT/bin:$PATH"
+      print 'lockfileVersion: 9' > pnpm-lock.yaml
+      git add pnpm-lock.yaml && git commit -qm lock
+      versionit patch && return 2
+      print '#!/bin/sh' > bin/pnpm
+      print 'printf "%s\n" "$*" > "$PNPM_CALLS"' >> bin/pnpm
+      print 'printf "updated\n" >> pnpm-lock.yaml' >> bin/pnpm
+      export PNPM_CALLS="$TMPROOT/calls"
+      versionit resume || return 3
+      [[ $(git diff --cached --name-only | tr '\n' ',') == 'package.json,pnpm-lock.yaml,' ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Staged version 1.2.4'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'Switched to a new branch'
+    The contents of file calls should equal 'install --lockfile-only --ignore-scripts'
+  End
+
+  It 'requires manual recovery when staging a successful retry fails'
+    Data 'yy'
+    run_it() {
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      unfunction npm
+      git() { [[ $1 == add ]] && return 1; command git "$@"; }
+      versionit resume && return 3
+      unfunction git
+      versionit resume && return 4
+      git diff --cached --quiet
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Resume version 1.2.4'
+    The stderr should include 'staging failed'
+    The stderr should include 'recovery state missing or changed'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'Switched to a new branch'
+  End
+
   It 'refuses to overwrite a pre-existing package edit'
     run_it() { print ' ' >> package.json; versionit patch; }
     When call run_it

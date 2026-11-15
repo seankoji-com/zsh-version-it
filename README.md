@@ -59,6 +59,10 @@ versionit 1.12.1     # explicit version
 
 `versionit` prints its plan and prompts before making changes. On confirmation it creates a branch (default `patch/<new-version>`), bumps the version, updates the existing lockfile, and stages the version files for you to review and commit.
 
+If an npm or pnpm lockfile refresh fails, inspect `git status` and the package and lockfile diffs, then run `versionit resume` from the same package directory. It shows the retry plan and asks for confirmation. The retry disables lifecycle scripts and stages only the package and lockfile after a successful refresh. Unrelated staged and unstaged changes remain in place.
+
+The command records the branch, commit, package directory, version and target file hashes in `versionit-resume.json` inside the worktree's Git directory. It refuses a missing or invalid record, a changed branch or commit, changed targets or target index, workspaces, and ambiguous lockfiles. Restore the recorded state or recover manually after reviewing the changes. A repeated refresh failure creates a new record if the state is still safe. The record is removed before a retry runs and after success; an interruption or staging failure therefore requires manual inspection and recovery. Once you have recovered manually, remove the record from the worktree's Git directory before starting another version bump. No automatic rollback is performed.
+
 ### Configuration
 
 Set before loading the plugin:
