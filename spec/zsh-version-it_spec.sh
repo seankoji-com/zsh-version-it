@@ -326,7 +326,7 @@ Describe 'zsh-version-it.plugin.zsh'
   End
 
   It 'refuses resume after a branch switch or a staged target edit'
-    Data 'y'
+    Data 'yyy'
     run_it() {
       command npm install --package-lock-only --ignore-scripts >/dev/null || return
       git add package-lock.json && git commit -qm lock
@@ -343,6 +343,7 @@ Describe 'zsh-version-it.plugin.zsh'
     When call run_it
     The status should be success
     The output should include 'staged package preserved'
+    The output should not include 'Resume version'
     The stderr should include 'recovery state missing or changed'
     The stderr should include 'Switched to a new branch'
   End
@@ -488,7 +489,7 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'Switched to a new branch'
   End
 
-  It 'rejects corrupt and unsupported recovery records without changing state'
+  It 'rejects corrupt, unsupported, and foreign-directory recovery records without changing state'
     Data 'yy'
     run_it() {
       command npm install --package-lock-only --ignore-scripts >/dev/null || return
@@ -502,11 +503,11 @@ Describe 'zsh-version-it.plugin.zsh'
       lock_hash=$(git hash-object package-lock.json) || return
       head=$(git rev-parse HEAD) || return
       npm() { print called > "$TMPROOT/unexpected-npm"; return 1; }
-      for kind in corrupt unsupported; do
+      for kind in corrupt unsupported foreign; do
         if [[ $kind == corrupt ]]; then
           print -r -- '{broken' > "$gitdir/versionit-resume.json"
         else
-          node -e 'const fs=require("fs");const r=JSON.parse(fs.readFileSync("original-record"));r.format=2;fs.writeFileSync(process.argv[1],JSON.stringify(r))' "$gitdir/versionit-resume.json" || return
+          node -e 'const fs=require("fs");const r=JSON.parse(fs.readFileSync("original-record"));if(process.argv[2]==="unsupported")r.format=2;else r.dir+="-other";fs.writeFileSync(process.argv[1],JSON.stringify(r))' "$gitdir/versionit-resume.json" "$kind" || return
         fi
         record_hash=$(git hash-object "$gitdir/versionit-resume.json") || return
         versionit resume && return 3
@@ -551,6 +552,31 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'recovery state exists'
     The stderr should include 'lockfile update failed'
     The stderr should include 'Switched to a new branch'
+  End
+
+  It 'refuses a bump with only an interrupted claim or dangling record link'
+    Data 'yy'
+    run_it() {
+      local gitdir head package_hash
+      gitdir=$(git rev-parse --absolute-git-dir) || return
+      head=$(git rev-parse HEAD) || return
+      package_hash=$(git hash-object package.json) || return
+      npm() { print called > "$TMPROOT/unexpected-npm"; return 1; }
+      mkdir "$gitdir/versionit-resume.lock" || return
+      versionit patch && return 2
+      [[ -d $gitdir/versionit-resume.lock && ! -e unexpected-npm ]] || return 3
+      rmdir "$gitdir/versionit-resume.lock" || return
+      ln -s missing-record "$gitdir/versionit-resume.json" || return
+      versionit patch && return 4
+      [[ -L $gitdir/versionit-resume.json && ! -e unexpected-npm ]] || return 5
+      [[ $(git rev-parse HEAD) == $head && -z $(git branch --list patch/1.2.4) ]] || return 6
+      [[ $(git hash-object package.json) == $package_hash ]] || return 7
+      git diff --quiet && git diff --cached --quiet
+    }
+    When call run_it
+    The status should be success
+    The stderr should include 'recovery state exists'
+    The output should not include 'Continue?'
   End
 
   It 'refuses a bump if recovery state appears after confirmation'
@@ -635,6 +661,41 @@ Describe 'zsh-version-it.plugin.zsh'
     The status should be success
     The output should include 'Resume version 1.2.4'
     The stderr should include 'recovery state changed after confirmation'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'refuses resume if another lockfile appears before or during confirmation'
+    Data 'yy'
+    run_it() {
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      local gitdir record_hash package_hash lock_hash result
+      gitdir=$(git rev-parse --absolute-git-dir) || return
+      record_hash=$(git hash-object "$gitdir/versionit-resume.json") || return
+      package_hash=$(git hash-object package.json) || return
+      lock_hash=$(git hash-object package-lock.json) || return
+      npm() { print called > "$TMPROOT/unexpected-npm"; return 1; }
+      print 'other lock' > yarn.lock
+      versionit resume && return 3
+      [[ ! -e unexpected-npm ]] || return 8
+      rm yarn.lock || return
+      read() { print 'other lock' > yarn.lock; builtin read "$@"; }
+      versionit resume
+      result=$?
+      unfunction read
+      (( result != 0 )) || return 4
+      [[ $(cat yarn.lock) == 'other lock' && ! -e unexpected-npm ]] || return 5
+      [[ $(git hash-object "$gitdir/versionit-resume.json") == $record_hash && ! -e $gitdir/versionit-resume.lock ]] || return 6
+      [[ $(git hash-object package.json) == $package_hash && $(git hash-object package-lock.json) == $lock_hash ]] || return 7
+      git diff --cached --quiet
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Resume version 1.2.4'
+    The stderr should include 'another lockfile requires manual recovery'
     The stderr should include 'lockfile update failed'
     The stderr should include 'Switched to a new branch'
   End
