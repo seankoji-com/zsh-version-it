@@ -188,6 +188,42 @@ Describe 'zsh-version-it.plugin.zsh'
     The contents of file "$TMPROOT/packages/a/package.json" should include '1.2.3'
   End
 
+  It 'ignores an untracked ignored ancestor lockfile'
+    Data 'y'
+    run_it() {
+      mkdir -p packages/a
+      print '{"name":"a","version":"1.2.3"}' > packages/a/package.json
+      print '/yarn.lock' > .gitignore
+      print 'ancestor data' > yarn.lock
+      git add packages/a/package.json && git commit -qm package
+      builtin cd packages/a
+      versionit patch || return
+      [[ $(cat "$TMPROOT/yarn.lock") == 'ancestor data' ]] || return 1
+      git diff --cached --name-only
+    }
+    When call run_it
+    The status should be success
+    The output should include 'packages/a/package.json'
+    The stderr should include 'Switched to a new branch'
+    The contents of file "$TMPROOT/yarn.lock" should equal 'ancestor data'
+  End
+
+  It 'still refuses an ancestor lockfile tracked despite an ignore pattern'
+    run_it() {
+      mkdir -p packages/a
+      print '{"name":"a","version":"1.2.3"}' > packages/a/package.json
+      print '/yarn.lock' > .gitignore
+      touch yarn.lock
+      git add -f yarn.lock && git add packages/a/package.json && git commit -qm workspace
+      builtin cd packages/a
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'ancestor lockfile'
+    The contents of file "$TMPROOT/packages/a/package.json" should include '1.2.3'
+  End
+
   It 'reports a staging failure after creating the branch'
     Data 'y'
     run_it() { git() { [[ $1 == add ]] && return 1; command git "$@"; }; versionit patch; }
@@ -255,6 +291,86 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'ignored package-lock.json will not be updated or staged'
     The output should include 'package.json'
     The contents of file package-lock.json should equal 'local data'
+  End
+
+  It 'does not count an ignored untracked lockfile against a tracked lockfile'
+    Data 'y'
+    run_it() {
+      npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      print 'yarn.lock' > .gitignore
+      print 'local data' > yarn.lock
+      versionit patch || return
+      [[ $(cat yarn.lock) == 'local data' ]] || return 1
+      node -e 'if(require("./package-lock.json").version!=="1.2.4") process.exit(1)' || return
+      git diff --cached --name-only
+    }
+    When call run_it
+    The status should be success
+    The stderr should include 'ignored yarn.lock will not be updated or staged'
+    The output should include 'package-lock.json'
+    The contents of file yarn.lock should equal 'local data'
+  End
+
+  It 'leaves an ignored npm lockfile alone beside a tracked Yarn lockfile'
+    Data 'y'
+    run_it() {
+      print 'tracked yarn' > yarn.lock
+      git add yarn.lock && git commit -qm lock
+      print 'package-lock.json' > .gitignore
+      print 'local data' > package-lock.json
+      versionit patch || return
+      [[ $(cat package-lock.json) == 'local data' && $(cat yarn.lock) == 'tracked yarn' ]] || return 1
+      git diff --cached --name-only
+    }
+    When call run_it
+    The status should be success
+    The stderr should include 'ignored package-lock.json will not be updated or staged'
+    The output should include 'package.json'
+    The contents of file package-lock.json should equal 'local data'
+  End
+
+  It 'counts tracked lockfiles even when ignore patterns match them'
+    run_it() {
+      print 'yarn.lock' > .gitignore
+      touch yarn.lock pnpm-lock.yaml
+      git add -f yarn.lock && git add pnpm-lock.yaml && git commit -qm locks
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'multiple lockfiles'
+    The contents of file package.json should include '1.2.3'
+  End
+
+  It 'refuses a Yarn workspace even when its lockfile is ignored'
+    run_it() {
+      print '{"name":"versionit-test","version":"1.2.3","workspaces":["packages/*"]}' > package.json
+      git add package.json && git commit -qm workspace
+      print 'yarn.lock' > .gitignore
+      print 'local data' > yarn.lock
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'Yarn workspaces require a manual version and lockfile update'
+    The contents of file yarn.lock should equal 'local data'
+    The contents of file package.json should include '1.2.3'
+  End
+
+  It 'refuses conflicting npm lockfiles when one is ignored'
+    run_it() {
+      npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      print 'npm-shrinkwrap.json' > .gitignore
+      print 'local data' > npm-shrinkwrap.json
+      versionit patch
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'npm may modify ignored npm-shrinkwrap.json'
+    The contents of file npm-shrinkwrap.json should equal 'local data'
+    The contents of file package.json should include '1.2.3'
   End
 
   It 'updates npm shrinkwrap when it exists'
