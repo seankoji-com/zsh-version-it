@@ -2,7 +2,9 @@
 
 Bump an npm package version onto a fresh branch, ready to commit.
 
-`versionit <keyword|version>` runs `npm version --no-git-tag-version` to update `package.json` (without creating a git tag), then creates a branch named after the resulting version, refreshes the lockfile with `npm install --package-lock-only`, and stages all changes with `git add .`. It stops there — nothing is committed and nothing is pushed, so you review the staged changes and commit yourself. Before doing anything it prints the exact commands it will run and asks for confirmation. The branch prefix is configurable so it can match your team's convention.
+`versionit <keyword|version>` calculates the version with npm, creates a branch named after it, updates `package.json` and the existing lockfile, and stages those files. Nothing is committed or pushed. It asks for confirmation before making changes. Version scripts are disabled. The branch prefix is configurable.
+
+The package and lockfile must be tracked and clean. Multiple lockfiles are rejected instead of guessing which to use. npm handles `package-lock.json` and `npm-shrinkwrap.json`, pnpm handles `pnpm-lock.yaml`, and Yarn handles `yarn.lock`. With no lockfile, none is created. The selected package manager must be installed. If an update fails after branch creation, inspect the working tree before retrying.
 
 ## Installation
 
@@ -36,7 +38,7 @@ Then add it to the `plugins` array in your `.zshrc`:
 plugins=(... zsh-version-it)
 ```
 
-Requires `node` and `npm` on your `PATH`, and should be run from a git repository containing a `package.json`.
+Requires `node`, `npm`, and the package manager for the existing lockfile on your `PATH`. Run it from a git repository containing a `package.json`.
 
 ## Usage
 
@@ -55,7 +57,7 @@ versionit major      # 1.2.3 -> 2.0.0
 versionit 1.12.1     # explicit version
 ```
 
-`versionit` prints the commands it will run and prompts before making changes. On confirmation it bumps the version, creates a branch (default `patch/<new-version>`), updates the lockfile, and stages everything. The result is left staged for you to review and commit.
+`versionit` prints its plan and prompts before making changes. On confirmation it creates a branch (default `patch/<new-version>`), bumps the version, updates the existing lockfile, and stages the version files for you to review and commit.
 
 ### Configuration
 
