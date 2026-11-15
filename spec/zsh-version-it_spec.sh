@@ -280,6 +280,7 @@ Describe 'zsh-version-it.plugin.zsh'
       command npm install --package-lock-only --ignore-scripts >/dev/null || return
       git add package-lock.json && git commit -qm lock
       print 'user data' > unrelated && git add unrelated
+      print 'unstaged data' > another
       npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
       versionit patch && return 2
       [[ $(git branch --show-current) == patch/1.2.4 ]] || return 3
@@ -288,6 +289,7 @@ Describe 'zsh-version-it.plugin.zsh'
       versionit resume || return 5
       [[ $(git diff --cached --name-only | tr '\n' ',') == 'package-lock.json,package.json,unrelated,' ]] || return 6
       node -e 'const p=require("./package-lock.json");if(p.version!=="1.2.4")process.exit(1)' || return 7
+      [[ $(cat another) == 'unstaged data' ]] || return 8
       [[ ! -e $(git rev-parse --absolute-git-dir)/versionit-resume.json ]]
     }
     When call run_it
@@ -309,6 +311,7 @@ Describe 'zsh-version-it.plugin.zsh'
       git add pnpm-lock.yaml && git commit -qm lock
       versionit patch && return 2
       versionit resume && return 3
+      [[ -f $(git rev-parse --absolute-git-dir)/versionit-resume.json ]] || return 5
       print 'user edit' >> pnpm-lock.yaml
       versionit resume && return 4
       [[ $(git diff --cached --name-only) == '' && $(git branch --show-current) == patch/1.2.4 ]]
@@ -334,11 +337,12 @@ Describe 'zsh-version-it.plugin.zsh'
       git checkout -q patch/1.2.4 || return
       git add package.json
       versionit resume && return 4
-      git diff --cached --name-only
+      [[ $(git diff --cached --name-only) == package.json ]] || return 5
+      print 'staged package preserved'
     }
     When call run_it
     The status should be success
-    The output should include 'package.json'
+    The output should include 'staged package preserved'
     The stderr should include 'recovery state missing or changed'
     The stderr should include 'Switched to a new branch'
   End
@@ -390,6 +394,34 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'recovery state missing or changed'
     The stderr should include 'lockfile update failed'
     The stderr should include 'Switched to a new branch'
+  End
+
+  It 'does not offer automatic recovery for a workspace failure'
+    Data 'y'
+    run_it() {
+      print '{"name":"versionit-test","version":"1.2.3","workspaces":["packages/*"]}' > package.json
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package.json package-lock.json && git commit -qm workspace
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      [[ ! -e $(git rev-parse --absolute-git-dir)/versionit-resume.json ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Continue?'
+    The stderr should include 'workspace recovery requires manual review'
+    The stderr should include 'no safe recovery record'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'refuses a concurrent resume before touching a record'
+    run_it() {
+      mkdir "$(git rev-parse --absolute-git-dir)/versionit-resume.lock" || return
+      versionit resume
+    }
+    When call run_it
+    The status should be failure
+    The stderr should include 'resume already running or interrupted'
   End
 
   It 'refuses to overwrite a pre-existing package edit'

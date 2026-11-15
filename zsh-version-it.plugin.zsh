@@ -32,6 +32,7 @@ _versionit_failed_refresh() {
   if [[ $(git branch --show-current) == $branch && $(git rev-parse HEAD) == $head ]] &&
      git diff --cached --quiet -- package.json "$lock" &&
      node -e 'const f=require("fs"),c=require("crypto");try {if(c.createHash("sha256").update(f.readFileSync("package.json")).digest("hex")!==process.argv[1])process.exit(1);f.accessSync(process.argv[2])}catch(e){process.exit(1)}' "$package_hash" "$lock" &&
+     _versionit_resume_scope "$lock" &&
      _versionit_record "$record" "$branch" "$head" "$new" "$lock" "$manager"; then
     print -u2 'versionit: lockfile update failed; inspect the working tree and run versionit resume'
   else
@@ -86,6 +87,17 @@ _versionit_resume_scope() {
 }
 
 _versionit_resume() {
+  local gitdir claim result
+  gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
+  claim=$gitdir/versionit-resume.lock
+  mkdir -- "$claim" 2>/dev/null || { print -u2 "versionit: resume already running or interrupted; inspect $claim"; return 1; }
+  _versionit_resume_locked
+  result=$?
+  rmdir -- "$claim" || print -u2 "versionit: could not remove $claim; inspect it manually"
+  return $result
+}
+
+_versionit_resume_locked() {
   local gitdir record branch head new lock manager reply package_hash result
   gitdir=$(git rev-parse --absolute-git-dir 2>/dev/null) || return 1
   record=$gitdir/versionit-resume.json
@@ -101,11 +113,15 @@ _versionit_resume() {
   package_hash=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).packageHash' "$record") || return 1
   _versionit_resume_scope "$lock" || return 1
   (( $+commands[$manager] )) || { print -u2 "versionit: $manager is required"; return 1; }
-  print "Resume version $new on branch $branch: refresh $lock with $manager (scripts disabled), then stage package.json and $lock."
+  print "Resume version $new on branch $branch: refresh $lock with $manager (lifecycle scripts disabled), then stage package.json and $lock."
   print 'Review the current package and lockfile diff before confirming.'
   print 'Existing unrelated changes remain untouched. Nothing is committed or pushed.'
   print -n 'Continue? [y/N] '
-  read -k 1 -u 0 reply || return 1
+  if [[ -t 0 ]]; then
+    read -k 1 reply || return 1
+  else
+    read -k 1 -u 0 reply || return 1
+  fi
   print
   [[ $reply == [Yy] ]] || { print 'Aborting'; return 1; }
   _versionit_validate_record "$record" || { print -u2 'versionit: recovery state changed after confirmation'; return 1; }
@@ -153,6 +169,13 @@ versionit() {
   lock_names=(package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock)
   locks=()
   root=$(git rev-parse --show-toplevel 2>/dev/null) || { print -u2 'versionit: not in a git repository'; return 1 }
+  local gitdir record
+  gitdir=$(git rev-parse --absolute-git-dir) || return 1
+  record=$gitdir/versionit-resume.json
+  if [[ -e $record || -L $record || -e $gitdir/versionit-resume.lock ]]; then
+    print -u2 "versionit: recovery state exists at $record or $gitdir/versionit-resume.lock; inspect it before continuing"
+    return 1
+  fi
   # A Yarn workspace can require a lock update even when its lock is ignored.
   if [[ -f yarn.lock ]] && node -e 'const p = require(process.cwd() + "/package.json"); process.exit(p.workspaces ? 0 : 1)'; then
     print -u2 'versionit: Yarn workspaces require a manual version and lockfile update'
@@ -247,7 +270,7 @@ versionit() {
   done
 
   # Ask npm to resolve keywords in an isolated copy before touching the tree.
-  local new tmp result gitdir preid allow_same
+  local new tmp result preid allow_same
   tmp=$(mktemp -d) || return 1
   gitdir=$(git rev-parse --absolute-git-dir) || { rm -rf -- "$tmp"; return 1; }
   preid=$(npm config get preid) || { rm -rf -- "$tmp"; return 1; }
@@ -269,9 +292,8 @@ versionit() {
       return 1
     fi
   done
-  local record branch head
-  record=$gitdir/versionit-resume.json
-  [[ ! -e $record && ! -L $record ]] || { print -u2 'versionit: existing recovery record requires attention'; return 1; }
+  local branch head
+  [[ ! -e $record && ! -L $record && ! -e $gitdir/versionit-resume.lock ]] || { print -u2 "versionit: recovery state exists at $record or $gitdir/versionit-resume.lock; inspect it before continuing"; return 1; }
   git checkout -b "${ZSH_VERSION_IT_BRANCH_PREFIX}/${new}" || return 1
   branch=$(git branch --show-current) || return 1
   head=$(git rev-parse HEAD) || return 1
