@@ -436,6 +436,49 @@ Describe 'zsh-version-it.plugin.zsh'
     The stderr should include 'resume already running or interrupted'
   End
 
+  It 'refuses a new bump while a recovery record exists'
+    Data 'y'
+    run_it() {
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      local before branch
+      before=$(git hash-object package.json) || return
+      branch=$(git branch --show-current) || return
+      versionit minor && return 3
+      [[ $(git branch --show-current) == $branch && $(git hash-object package.json) == $before ]] || return 4
+      [[ -f $(git rev-parse --absolute-git-dir)/versionit-resume.json && -z $(git branch --list patch/1.3.0) ]]
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Continue?'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'recovery state exists'
+    The stderr should include 'Switched to a new branch'
+  End
+
+  It 'preserves the record and releases the claim when resume is declined'
+    Data 'yn'
+    run_it() {
+      command npm install --package-lock-only --ignore-scripts >/dev/null || return
+      git add package-lock.json && git commit -qm lock
+      npm() { [[ $1 == install ]] && return 1; command npm "$@"; }
+      versionit patch && return 2
+      local gitdir before
+      gitdir=$(git rev-parse --absolute-git-dir) || return
+      before=$(git hash-object "$gitdir/versionit-resume.json") || return
+      versionit resume && return 3
+      [[ ! -e $gitdir/versionit-resume.lock && $(git hash-object "$gitdir/versionit-resume.json") == $before ]] || return 4
+      git diff --cached --quiet
+    }
+    When call run_it
+    The status should be success
+    The output should include 'Aborting'
+    The stderr should include 'lockfile update failed'
+    The stderr should include 'Switched to a new branch'
+  End
+
   It 'refuses to overwrite a pre-existing package edit'
     run_it() { print ' ' >> package.json; versionit patch; }
     When call run_it
