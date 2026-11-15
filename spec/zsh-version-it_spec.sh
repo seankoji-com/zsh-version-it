@@ -204,6 +204,8 @@ Describe 'zsh-version-it.plugin.zsh'
     When call run_it
     The status should be success
     The output should include 'packages/a/package.json'
+    The stderr should include 'ignored '
+    The stderr should include 'yarn.lock will not be updated or staged'
     The stderr should include 'Switched to a new branch'
     The contents of file "$TMPROOT/yarn.lock" should equal 'ancestor data'
   End
