@@ -580,23 +580,36 @@ Describe 'zsh-version-it.plugin.zsh'
   End
 
   It 'refuses a bump if recovery state appears after confirmation'
-    Data 'y'
+    Data 'yyy'
     run_it() {
-      local gitdir head package_hash
+      local gitdir head package_hash kind
       gitdir=$(git rev-parse --absolute-git-dir) || return
       head=$(git rev-parse HEAD) || return
       package_hash=$(git hash-object package.json) || return
       npm() {
-        if [[ $1 == config && ! -e $gitdir/versionit-resume.json ]]; then
-          print 'new recovery state' > "$gitdir/versionit-resume.json"
+        if [[ $1 == config ]]; then
+          case $kind in
+            record) print 'new recovery state' > "$gitdir/versionit-resume.json" ;;
+            claim) [[ -d $gitdir/versionit-resume.lock ]] || mkdir "$gitdir/versionit-resume.lock" ;;
+            link) [[ -L $gitdir/versionit-resume.json ]] || ln -s missing-record "$gitdir/versionit-resume.json" ;;
+          esac
         fi
         command npm "$@"
       }
-      versionit patch && return 2
-      [[ $(cat "$gitdir/versionit-resume.json") == 'new recovery state' ]] || return 3
-      [[ $(git rev-parse HEAD) == $head && -z $(git branch --list patch/1.2.4) ]] || return 4
-      [[ $(git hash-object package.json) == $package_hash ]] || return 5
-      git diff --quiet && git diff --cached --quiet
+      for kind in record claim link; do
+        versionit patch && return 2
+        case $kind in
+          record) [[ $(cat "$gitdir/versionit-resume.json") == 'new recovery state' ]] || return 3
+                  rm "$gitdir/versionit-resume.json" || return ;;
+          claim) [[ -d $gitdir/versionit-resume.lock ]] || return 3
+                 rmdir "$gitdir/versionit-resume.lock" || return ;;
+          link) [[ -L $gitdir/versionit-resume.json ]] || return 3
+                rm "$gitdir/versionit-resume.json" || return ;;
+        esac
+        [[ $(git rev-parse HEAD) == $head && -z $(git branch --list patch/1.2.4) ]] || return 4
+        [[ $(git hash-object package.json) == $package_hash ]] || return 5
+        git diff --quiet && git diff --cached --quiet || return 6
+      done
     }
     When call run_it
     The status should be success
@@ -679,7 +692,8 @@ Describe 'zsh-version-it.plugin.zsh'
       lock_hash=$(git hash-object package-lock.json) || return
       npm() { print called > "$TMPROOT/unexpected-npm"; return 1; }
       print 'other lock' > yarn.lock
-      versionit resume && return 3
+      versionit resume > first-resume-output && return 3
+      ! command grep -q 'Continue?' first-resume-output || return 9
       [[ ! -e unexpected-npm ]] || return 8
       rm yarn.lock || return
       read() { print 'other lock' > yarn.lock; builtin read "$@"; }
